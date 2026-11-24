@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (lint · types · unit · integration)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/api
+
+    services:
+      postgres:
+        # Must match compose.yaml.
+        image: pgvector/pgvector:0.8.7-pg17-bookworm
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus-ci-only
+          POSTGRES_DB: nexus
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U nexus -d nexus"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      APP_ENV: test
+      LOG_FORMAT: json
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5434"
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus-ci-only
+      POSTGRES_DB: nexus
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python (from .python-version)
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.9"
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+
+      - name: Install dependencies (locked)
+        run: uv sync --locked
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: mypy
+        run: uv run mypy
+
+      - name: Unit tests
+        run: uv run pytest -m "not integration"
+
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
+      - name: Integration tests (real PostgreSQL; fails if unavailable)
+        run: uv run pytest -m integration
+
+  frontend:
+    name: Frontend (lint · types · build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js (from .nvmrc)
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies (locked)
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: TypeScript
+        run: npm run typecheck
+
+      # No backend is running here: the build must not depend on one.
+      - name: Production build
+        run: npm run build

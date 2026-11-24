@@ -1,0 +1,30 @@
+# NEXUS AI local infrastructure.
+# The explicit project name namespaces containers, networks and volumes
+# (nexus-postgres-1, nexus_default, nexus_pgdata) so they never collide with other
+# Compose projects on this machine.
+name: nexus
+
+services:
+  postgres:
+    # Pinned: pgvector 0.8.7 on PostgreSQL 17 (Debian bookworm).
+    image: pgvector/pgvector:0.8.7-pg17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set in .env}
+    ports:
+      # Loopback only: not reachable from other hosts on the network.
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # $$ escapes Compose interpolation so the variables expand inside the container.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pgdata:
