@@ -19,7 +19,8 @@ from nexus_api.core.config import Settings
 from nexus_api.db.engine import create_engine
 from nexus_api.db.health import check_database
 from nexus_api.main import create_app
-from tests.conftest import ClientFactory
+from tests.conftest import ClientFactory, wait_until_accepting
+from tests.fakes import HashEmbedder
 from tests.integration.conftest import alembic_config
 
 pytestmark = pytest.mark.integration
@@ -51,7 +52,7 @@ async def test_database_check_reports_up(engine: AsyncEngine) -> None:
 async def test_readiness_returns_200_when_database_is_available(
     migrated_settings: Settings, client_for: ClientFactory
 ) -> None:
-    async with client_for(create_app(migrated_settings)) as client:
+    async with client_for(create_app(migrated_settings, embedder=HashEmbedder())) as client:
         response = await client.get("/api/v1/health/ready")
 
     assert response.status_code == 200
@@ -67,7 +68,7 @@ async def test_migrations_are_at_head(engine: AsyncEngine, migrated_settings: Se
         result = await connection.execute(text("SELECT version_num FROM alembic_version"))
         current = result.scalar()
 
-    assert head == "0001"
+    assert head == "0002"
     assert current == head
 
 
@@ -119,7 +120,7 @@ def app_with_session_routes(migrated_settings: Settings) -> FastAPI:
         await session.execute(text("CREATE TABLE m0_failed (id int)"))
         raise RuntimeError("simulated failure mid-transaction")
 
-    app = create_app(migrated_settings)
+    app = create_app(migrated_settings, embedder=HashEmbedder())
     app.include_router(router)
     return app
 
@@ -150,7 +151,9 @@ async def test_shutdown_disposes_engine_connections(
     """
     db_name = migrated_settings.postgres_db
 
-    async with client_for(create_app(migrated_settings)) as client:
+    app = create_app(migrated_settings, embedder=HashEmbedder())
+    async with client_for(app) as client:
+        await wait_until_accepting(app)  # startup recovery uses the pool too
         assert (await client.get("/api/v1/health/ready")).status_code == 200
         assert await _scalar(migrated_settings, open_app_connections, db_name) == 1  # pooled, idle
 
@@ -179,7 +182,7 @@ async def test_readiness_returns_503_for_rejected_connections(
 ) -> None:
     settings = migrated_settings.model_copy(update=overrides)
 
-    async with client_for(create_app(settings)) as client:
+    async with client_for(create_app(settings, embedder=HashEmbedder())) as client:
         response = await client.get("/api/v1/health/ready")
 
     assert response.status_code == 503
@@ -241,7 +244,7 @@ async def test_cancelled_request_releases_connection_and_server_query(
     async def slow(session: DbSessionDep) -> None:
         await session.execute(text("SELECT pg_sleep(30)"))
 
-    app = create_app(migrated_settings)
+    app = create_app(migrated_settings, embedder=HashEmbedder())
     app.include_router(router)
     active_sleeps = (
         "SELECT count(*) FROM pg_stat_activity "
@@ -249,6 +252,7 @@ async def test_cancelled_request_releases_connection_and_server_query(
     )
 
     async with client_for(app) as client:
+        await wait_until_accepting(app)
         task = asyncio.create_task(client.get("/_test/slow"))
         for _ in range(40):
             if _checked_out(app.state.engine) == 1:
@@ -273,7 +277,7 @@ async def test_commit_releases_connection_before_request_ends(
 ) -> None:
     """Long work after commit (e.g. an LLM call) must not hold a pooled connection."""
     router = APIRouter(prefix="/_test")
-    app = create_app(migrated_settings)
+    app = create_app(migrated_settings, embedder=HashEmbedder())
 
     @router.get("/commit-then-work")
     async def commit_then_work(session: DbSessionDep) -> dict[str, int]:
@@ -284,6 +288,7 @@ async def test_commit_releases_connection_before_request_ends(
 
     app.include_router(router)
     async with client_for(app) as client:
+        await wait_until_accepting(app)
         response = await client.get("/_test/commit-then-work")
 
     assert response.json() == {"before": 1, "after": 0}

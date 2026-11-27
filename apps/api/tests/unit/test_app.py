@@ -43,7 +43,11 @@ async def test_readiness_returns_503_when_database_refuses_connections(
     assert response.status_code == 503
     assert response.json() == {
         "status": "not_ready",
-        "checks": {"database": {"status": "down", "latency_ms": None, "error": "unavailable"}},
+        "checks": {
+            "database": {"status": "down", "latency_ms": None, "error": "unavailable"},
+            # make_settings points the model cache at a missing directory.
+            "embedding_model": {"status": "down", "latency_ms": None, "error": "unavailable"},
+        },
     }
     assert "x-request-id" in response.headers
 

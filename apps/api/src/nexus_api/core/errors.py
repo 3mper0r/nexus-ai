@@ -52,9 +52,10 @@ class AppError(Exception):
     status_code: int = status.HTTP_400_BAD_REQUEST
     code: str = "bad_request"
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, *, headers: Mapping[str, str] | None = None) -> None:
         super().__init__(message)
         self.message = message
+        self.headers = headers
 
 
 def _status_code_slug(status_code: int) -> str:
@@ -132,6 +133,7 @@ async def _handle_app_error(request: Request, exc: Exception) -> JSONResponse:
         code=exc.code,
         message=exc.message,
         request_id=_request_id(request),
+        headers=exc.headers,
     )
 
 

@@ -4,7 +4,8 @@
   dependencies, so a database outage does not cause an orchestrator to restart
   healthy API processes.
 * Readiness answers "can this instance do useful work right now?" It checks the
-  database with a bounded timeout and returns 503 when it is unavailable.
+  database with a bounded timeout and whether the embedding model is loaded, and
+  returns 503 when either is unavailable.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from typing import Literal
 from fastapi import APIRouter, Response, status
 from pydantic import BaseModel
 
-from nexus_api.api.deps import EngineDep, SettingsDep
+from nexus_api.api.deps import EmbedderProviderDep, EngineDep, SettingsDep
 from nexus_api.db.health import FailureReason, check_database
 
 router = APIRouter(prefix="/health", tags=["health"])
@@ -27,7 +28,7 @@ class LivenessResponse(BaseModel):
 class DependencyCheck(BaseModel):
     status: Literal["up", "down"]
     latency_ms: float | None = None
-    error: FailureReason | None = None
+    error: FailureReason | Literal["loading"] | None = None
 
 
 class ReadinessResponse(BaseModel):
@@ -46,7 +47,10 @@ async def liveness() -> LivenessResponse:
     responses={status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ReadinessResponse}},
 )
 async def readiness(
-    response: Response, engine: EngineDep, settings: SettingsDep
+    response: Response,
+    engine: EngineDep,
+    settings: SettingsDep,
+    embedder_provider: EmbedderProviderDep,
 ) -> ReadinessResponse:
     db = await check_database(engine, settings.db_health_timeout_seconds)
     database_check = DependencyCheck(
@@ -54,9 +58,17 @@ async def readiness(
         latency_ms=db.latency_ms,
         error=db.failure,
     )
-    if not db.is_up:
+    model_state = embedder_provider.state
+    model_check = DependencyCheck(
+        status="up" if model_state == "ready" else "down",
+        error=None
+        if model_state == "ready"
+        else ("loading" if model_state == "loading" else "unavailable"),
+    )
+    ready = db.is_up and model_state == "ready"
+    if not ready:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return ReadinessResponse(
-        status="ready" if db.is_up else "not_ready",
-        checks={"database": database_check},
+        status="ready" if ready else "not_ready",
+        checks={"database": database_check, "embedding_model": model_check},
     )

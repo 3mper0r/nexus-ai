@@ -13,6 +13,8 @@ from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from nexus_api.core.config import Settings
+from nexus_api.documents.ingestion import IngestionRunner
+from nexus_api.embeddings.provider import EmbedderProvider
 
 
 def get_settings(request: Request) -> Settings:
@@ -37,6 +39,18 @@ async def get_db_session(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
 
 
+def get_embedder_provider(request: Request) -> EmbedderProvider:
+    provider: EmbedderProvider = request.app.state.embedder_provider
+    return provider
+
+
+def get_ingestion_runner(request: Request) -> IngestionRunner:
+    runner: IngestionRunner = request.app.state.ingestion_runner
+    return runner
+
+
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 EngineDep = Annotated[AsyncEngine, Depends(get_engine)]
 DbSessionDep = Annotated[AsyncSession, Depends(get_db_session)]
+EmbedderProviderDep = Annotated[EmbedderProvider, Depends(get_embedder_provider)]
+IngestionRunnerDep = Annotated[IngestionRunner, Depends(get_ingestion_runner)]

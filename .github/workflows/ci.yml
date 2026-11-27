@@ -75,14 +75,16 @@ jobs:
       - name: mypy
         run: uv run mypy
 
+      # Routine CI never downloads the embedding model: unit and integration tests
+      # use a deterministic fake. The real model is verified in model.yml.
       - name: Unit tests
-        run: uv run pytest -m "not integration"
+        run: uv run pytest -m "not integration and not model"
 
       - name: Apply migrations
         run: uv run alembic upgrade head
 
       - name: Integration tests (real PostgreSQL; fails if unavailable)
-        run: uv run pytest -m integration
+        run: uv run pytest -m "integration and not model"
 
   frontend:
     name: Frontend (lint · types · build)

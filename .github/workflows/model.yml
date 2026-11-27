@@ -1,0 +1,92 @@
+name: Embedding model
+
+# Verifies the real, pinned embedding model (download, multilingual retrieval,
+# end-to-end ingestion and search). Kept out of the routine CI workflow so that
+# pull requests stay fast and deterministic and never depend on the Hugging Face Hub.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1" # Mondays 05:00 UTC
+  push:
+    branches: [main]
+    paths:
+      - apps/api/src/nexus_api/embeddings/**
+      - apps/api/src/nexus_api/documents/**
+      - apps/api/uv.lock
+      - .github/workflows/model.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  model:
+    name: Real model (multilingual-e5-small)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/api
+
+    services:
+      postgres:
+        # Must match compose.yaml.
+        image: pgvector/pgvector:0.8.7-pg17-bookworm
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus-ci-only
+          POSTGRES_DB: nexus
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U nexus -d nexus"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      APP_ENV: test
+      LOG_FORMAT: json
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5434"
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus-ci-only
+      POSTGRES_DB: nexus
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python (from .python-version)
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.9"
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+
+      - name: Install dependencies (locked)
+        run: uv sync --locked
+
+      # Keyed by the pinned revision in config.py: a new revision downloads afresh.
+      - name: Cache embedding model
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.hf-cache
+          key: hf-${{ hashFiles('apps/api/src/nexus_api/core/config.py') }}
+
+      - name: Download pinned model
+        run: uv run python -m nexus_api.embeddings.download
+
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
+      - name: Real-model tests
+        run: uv run pytest -m model

@@ -73,6 +73,11 @@ migration: check-env ## Create a migration: make migration name="add documents t
 	@test -n "$(name)" || (echo 'Usage: make migration name="describe the change"' && exit 1)
 	$(UV_RUN) alembic revision --autogenerate -m "$(name)"
 
+##@ Embedding model
+.PHONY: models
+models: ## Download the pinned embedding model (~490 MB) into the Hugging Face cache
+	cd $(API_DIR) && uv run python -m nexus_api.embeddings.download
+
 ##@ Run
 .PHONY: api web
 api: check-env ## Run the API with auto-reload on http://127.0.0.1:8000
@@ -82,7 +87,7 @@ web: ## Run the web app (dev server) on http://localhost:3000
 	cd $(WEB_DIR) && npm run dev
 
 ##@ Quality
-.PHONY: format lint typecheck test test-unit test-integration check api-check web-check
+.PHONY: format lint typecheck test test-unit test-integration test-model check api-check web-check
 format: ## Auto-format backend code (ruff)
 	cd $(API_DIR) && uv run ruff format . && uv run ruff check --fix .
 
@@ -94,17 +99,20 @@ typecheck: ## Type-check backend (mypy) and frontend (tsc)
 	cd $(API_DIR) && uv run mypy
 	cd $(WEB_DIR) && npm run typecheck
 
-test-unit: ## Backend unit tests (no infrastructure required)
-	cd $(API_DIR) && uv run pytest -m "not integration"
+test-unit: ## Backend unit tests (no database, no model)
+	cd $(API_DIR) && uv run pytest -m "not integration and not model"
 
 test-integration: check-env ## Backend integration tests (requires `make db-up`; fails if DB is down)
-	$(UV_RUN) pytest -m integration
+	$(UV_RUN) pytest -m "integration and not model"
 
-test: check-env ## All backend tests (requires `make db-up`)
-	$(UV_RUN) pytest
+test-model: check-env ## Real embedding model tests (requires `make models` and `make db-up`)
+	$(UV_RUN) pytest -m model
+
+test: check-env ## Backend unit + integration tests (requires `make db-up`; excludes model tests)
+	$(UV_RUN) pytest -m "not model"
 
 api-check: ## Backend: lint, format check, mypy, unit tests
-	cd $(API_DIR) && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -m "not integration"
+	cd $(API_DIR) && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -m "not integration and not model"
 
 web-check: ## Frontend: lint, typecheck, production build
 	cd $(WEB_DIR) && npm run check

@@ -49,7 +49,7 @@ async function HealthPanel() {
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <ProbeCard
           title="API process"
           description="Liveness: the HTTP process is up and serving requests."
@@ -65,9 +65,10 @@ async function HealthPanel() {
           ]}
         />
         <DatabaseCard readiness={readiness} />
+        <EmbeddingModelCard readiness={readiness} />
       </div>
 
-      <p className="font-mono text-xs text-muted">
+      <p className="break-all font-mono text-xs text-muted">
         Checked at <time dateTime={checkedAt}>{checkedAt}</time> · correlation{" "}
         <span className="text-foreground">{requestId}</span>
       </p>
@@ -106,6 +107,34 @@ function DatabaseCard({ readiness }: { readiness: ApiResult<ReadinessResponse> }
   );
 }
 
+function EmbeddingModelCard({ readiness }: { readiness: ApiResult<ReadinessResponse> }) {
+  const description = "Readiness: multilingual-e5-small loaded from the local model cache.";
+  const model: DependencyCheck | undefined = readiness.ok
+    ? readiness.data.checks.embedding_model
+    : undefined;
+  const badge: ProbeCardProps["badge"] = !readiness.ok
+    ? { tone: "neutral", label: "unknown" }
+    : model?.status === "up"
+      ? { tone: "success", label: "loaded" }
+      : model?.error === "loading"
+        ? { tone: "warning", label: "loading" }
+        : { tone: "danger", label: "unavailable" };
+  return (
+    <ProbeCard
+      title="Embedding model"
+      description={description}
+      badge={badge}
+      rows={[
+        ["Model", "intfloat/multilingual-e5-small"],
+        [
+          "Hint",
+          model?.error === "unavailable" ? "run make models, then restart the API" : "none",
+        ],
+      ]}
+    />
+  );
+}
+
 type ProbeCardProps = {
   title: string;
   description: string;
@@ -115,7 +144,9 @@ type ProbeCardProps = {
 
 function ProbeCard({ title, description, badge, rows }: ProbeCardProps) {
   return (
-    <section className="rounded-card border border-border bg-surface p-5" aria-label={title}>
+    // min-w-0: grid items default to min-width:auto, which would stop `truncate`
+    // below from working and let long values widen the page on mobile.
+    <section className="min-w-0 rounded-card border border-border bg-surface p-5" aria-label={title}>
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="font-medium">{title}</h2>
@@ -126,8 +157,10 @@ function ProbeCard({ title, description, badge, rows }: ProbeCardProps) {
       <dl className="mt-5 space-y-2 border-t border-border pt-4 text-sm">
         {rows.map(([label, value]) => (
           <div key={label} className="flex justify-between gap-4">
-            <dt className="text-muted">{label}</dt>
-            <dd className="truncate text-right font-mono text-foreground">{value}</dd>
+            <dt className="shrink-0 text-muted">{label}</dt>
+            <dd className="min-w-0 truncate text-right font-mono text-foreground" title={value}>
+              {value}
+            </dd>
           </div>
         ))}
       </dl>
@@ -137,8 +170,8 @@ function ProbeCard({ title, description, badge, rows }: ProbeCardProps) {
 
 function StatusSkeleton() {
   return (
-    <div className="grid gap-4 md:grid-cols-2" aria-busy="true" aria-label="Loading status">
-      {[0, 1].map((key) => (
+    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3" aria-busy="true" aria-label="Loading status">
+      {[0, 1, 2].map((key) => (
         <div key={key} className="h-48 animate-pulse rounded-card border border-border bg-surface" />
       ))}
     </div>

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from nexus_api.core.config import Settings
 from nexus_api.core.logging import configure_logging
+from nexus_api.db import models as _models  # noqa: F401 - registers tables on Base.metadata
 from nexus_api.db.base import Base
 
 config = context.config

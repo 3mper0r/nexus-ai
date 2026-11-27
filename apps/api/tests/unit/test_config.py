@@ -74,3 +74,41 @@ def test_database_url_escapes_and_masks_password(make_settings: SettingsFactory)
     assert url.render_as_string(hide_password=False).startswith(
         "postgresql+asyncpg://nexus:p%40ss%2Fword%3A1@127.0.0.1:5434/"
     )
+
+
+# --- M1: ingestion, embedding and search settings ---------------------------------
+
+
+def test_m1_defaults(make_settings: SettingsFactory) -> None:
+    settings = make_settings()
+
+    assert settings.embedding_model_name == "intfloat/multilingual-e5-small"
+    assert len(settings.embedding_model_revision) == 40
+    assert settings.max_upload_bytes == 20 * 1024 * 1024
+    assert settings.chunk_tokens == 400
+    assert settings.ingest_max_concurrency == 1
+
+
+@pytest.mark.parametrize("revision", ["main", "v1.0", "614241f", "Z" * 40])
+def test_model_revision_must_be_a_commit_hash(
+    make_settings: SettingsFactory, revision: str
+) -> None:
+    with pytest.raises(ValidationError, match="commit hash"):
+        make_settings(embedding_model_revision=revision)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"chunk_tokens": 500}, "CHUNK_TOKENS must be <= 496"),
+        ({"chunk_tokens": 100, "chunk_overlap_tokens": 50}, "less than half"),
+        ({"search_top_k_max": 50, "search_ef_search": 40}, "SEARCH_EF_SEARCH"),
+        ({"max_page_chars": 10}, "max_page_chars"),
+        ({"max_document_chars": 10}, "max_document_chars"),
+    ],
+)
+def test_rejects_inconsistent_m1_settings(
+    make_settings: SettingsFactory, overrides: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        make_settings(**overrides)

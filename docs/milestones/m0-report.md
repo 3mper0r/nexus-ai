@@ -211,8 +211,9 @@ scheduled Node 20's removal for 2026-09-23). Verified from the upstream reposito
 * The other three actions (`checkout`, `setup-python`, `setup-node` at `@v6`) already
   declare `node24`.
 
-The workflow now pins `astral-sh/setup-uv@1db35dd… # v10.4.0`. This change is **not yet
-verified remotely**. It will be confirmed by the next CI run once it is pushed.
+The workflow now pins `astral-sh/setup-uv@1db35dd… # v10.4.0`. **Verified remotely:**
+workflow run #2 for commit `0016147` passed (backend 39 s, frontend 25 s, total 44 s) with
+**no annotations**, i.e. the Node.js 20 deprecation warning is gone.
 
 ## 8. Local startup
 
