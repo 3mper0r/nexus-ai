@@ -14,7 +14,7 @@ An AI engineering platform built as a production-quality portfolio project.
 | Backend | FastAPI app factory, lifespan-managed async DB engine, Pydantic Settings, structlog JSON/console logging, request-ID middleware, consistent error envelope, CORS, `/api/v1/health/live` + `/api/v1/health/ready` |
 | Database | PostgreSQL 17 + pgvector 0.8.7 (Docker, `127.0.0.1:5434`), async SQLAlchemy 2.0, Alembic with migration `0001` enabling `vector` |
 | Frontend | Next.js 16 App Router, strict TypeScript, Tailwind v4 design tokens, typed server-only API client with timeouts, live `/status` page |
-| Quality | Ruff, mypy (strict), pytest (unit + real-DB integration), ESLint, `tsc`, GitHub Actions workflow |
+| Quality | Ruff, mypy (strict), pytest (unit + real-DB integration), ESLint, `tsc`, GitHub Actions workflow (verified passing on GitHub) |
 
 ## Repository layout
 
@@ -136,5 +136,4 @@ Run `make help` for the full list.
 
 * No authentication/authorization yet; CORS is configured with `allow_credentials=False`.
 * No Dockerfiles for the API or web app; only PostgreSQL is containerised.
-* The GitHub Actions workflow has not yet run on GitHub (no remote configured).
 * No AI functionality: see the roadmap in the M0 report.

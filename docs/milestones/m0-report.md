@@ -2,7 +2,8 @@
 
 * Date: 2026-11-24
 * Status: **Accepted** after review and engineering audit (2026-11-24). Final local results:
-  **57 tests passing: 44 unit, 13 integration.** Remote CI not yet executed.
+  **57 tests passing: 44 unit, 13 integration.** Remote CI **verified** on GitHub Actions
+  (2026-11-27, workflow run #1, commit `ac80017`: all jobs passed).
 
 ## 1. Executive summary
 
@@ -17,7 +18,7 @@ M0 delivers a reproducible full-stack foundation with no AI features:
 * 57 backend tests (44 unit and 13 real-database integration tests), strict linting and typing on both
   stacks, a CI workflow, and architecture, ADR, learning and interview documentation.
 
-All quality gates pass locally. The CI workflow has **not** run on GitHub yet because no remote is configured.
+All quality gates pass locally and in GitHub Actions (run #1 on commit `ac80017`, see §7b).
 
 ## 2. Implemented functionality
 
@@ -37,7 +38,7 @@ All quality gates pass locally. The CI workflow has **not** run on GitHub yet be
 | Session lifecycle | per-request `AsyncSession`, explicit commit, rollback on close/error | integration test |
 | Frontend | App Router, strict TS, Tailwind v4 tokens, layout shell, overview + `/status` | lint/typecheck/build + live HTTP |
 | API client | server-only, `no-store`, `AbortSignal.timeout`, runtime guards, `ApiResult<T>` | live: up / DB down / API down / API hanging |
-| CI | backend + frontend jobs | YAML parsed; **not executed on GitHub** |
+| CI | backend + frontend jobs | GitHub Actions run #1 (`ac80017`): backend ✅, frontend ✅ |
 
 ## 3. Final repository structure
 
@@ -111,8 +112,8 @@ httpx 0.28.1 · asgi-lifespan 2.1.0.
 @tailwindcss/turbopack 4.3.3 · typescript 5.9.3 · eslint 9.39.5 · eslint-config-next 16.4.6 ·
 @types/node 24.19.2 · geist 1.9.2 · server-only 0.0.1.
 
-**CI actions:** actions/checkout@v6 · actions/setup-python@v6 · astral-sh/setup-uv@v6 ·
-actions/setup-node@v6.
+**CI actions:** actions/checkout@v6 · actions/setup-python@v6 · actions/setup-node@v6 (all
+`node24`) · astral-sh/setup-uv v10.4.0 pinned to commit `1db35dd` (was `@v6`, see §7b).
 
 ## 7. Verification results (executed locally on 2026-11-24)
 
@@ -154,9 +155,9 @@ Runtime verification (live processes):
 | Web `/status` with API hanging (`API_TIMEOUT_MS=500`) | rendered in 0.58 s with "API did not respond within 500 ms" |
 | Other containers / host PostgreSQL | `avs-postgres`, `avs-redis`, `mongodb` and host `:5432` untouched |
 
-**Not verified:** GitHub Actions execution (no remote). `actionlint` was not run
-because executing a downloaded binary was declined in this environment; the
-workflow was validated structurally (YAML parse, job/step layout) only.
+**Not verified locally:** `actionlint` was not run because executing a downloaded binary
+was declined in this environment. The workflow has since been validated by real execution
+on GitHub (§7b).
 
 ## 7a. Engineering audit (2026-11-24)
 
@@ -176,6 +177,43 @@ Each property was probed empirically against the real database, then locked in w
 | Integration DDL safeguards | ⚠️ **added** production refusal and name checks (unit-tested) |
 | Docs accuracy | ⚠️ two inaccuracies corrected (test count, ADR 0002 attribution) |
 
+## 7b. Remote CI verification (2026-11-27)
+
+GitHub Actions workflow **run #1** for commit `ac80017` (push to `main`, remote
+`origin` on GitHub) **passed**:
+
+| Job | Result | Duration |
+|---|---|---|
+| Backend (lint · types · unit · integration) | ✅ pass | 39 s |
+| Frontend (lint · types · build) | ✅ pass | 34 s |
+| Workflow total (jobs run in parallel) | ✅ pass | 42 s |
+
+This confirms on a clean `ubuntu-24.04` runner: locked installs (`uv sync --locked`,
+`npm ci`), Ruff, mypy, ESLint, `tsc`, unit tests, `alembic upgrade head` and the real-DB
+integration tests against the `pgvector/pgvector:0.8.7-pg17-bookworm` service container,
+and the frontend production build with no backend.
+
+**Follow-up: Node.js 20 deprecation warning.** The run reported that
+`astral-sh/setup-uv@v6` uses the deprecated Node.js 20 runtime (`runs.using: "node20"`
+in its `action.yml`; GitHub moved runners to Node 24 by default on 2026-06-16 and
+scheduled Node 20's removal for 2026-09-23). Verified from the upstream repository:
+
+* `v7.0.0` (2025-10-07) was the first `node24` release. Its only breaking changes were the
+  runtime and removal of the `server-url` input, which this workflow does not use.
+* Since `v8.0.0` the project **no longer publishes floating major/minor tags** (`@v8`,
+  `@v10` do not exist) and recommends an immutable tag or commit SHA.
+* Latest release `v10.4.0` = commit `1db35dd8eee11c5894872e0b383ae6c406cf738d`,
+  `runs.using: "node24"`. The inputs used here (`version`, `enable-cache`,
+  `cache-dependency-glob`) are unchanged. Defaults that changed but don't affect us:
+  `prune-cache` now defaults to `false` (v9) and `enable-cache: auto` skips
+  `pull_request_target`/`workflow_run`/`release` events (v10). We set `enable-cache: true`
+  and trigger only on `push`/`pull_request`.
+* The other three actions (`checkout`, `setup-python`, `setup-node` at `@v6`) already
+  declare `node24`.
+
+The workflow now pins `astral-sh/setup-uv@1db35dd… # v10.4.0`. This change is **not yet
+verified remotely**. It will be confirmed by the next CI run once it is pushed.
+
 ## 8. Local startup
 
 ```bash
@@ -190,7 +228,6 @@ make web        # terminal 2 → http://localhost:3000/status
 * No Dockerfiles for API/web; no production deployment configuration (out of scope).
 * Request logging logs every probe at INFO (may be noisy under an orchestrator).
 * TS API types are hand-maintained mirrors of Pydantic models (no OpenAPI codegen yet).
-* CI not yet executed on GitHub; first push may surface environment differences.
 * The local user `~/.npmrc` sets `package-lock=false`; the project `.npmrc` overrides it.
   Other per-user npm settings could still differ.
 * Integration tests require Docker locally (by design; `make test-unit` otherwise).
@@ -234,6 +271,6 @@ Langfuse tracing · RAGAS evaluation · authentication · containerised API/web.
 - [x] Ruff, mypy strict, pytest, ESLint, tsc, next build all passing locally
 - [x] Integration tests fail (not skip) when DB unavailable; selectable/deselectable by marker
 - [x] CI workflow defined for all required checks
-- [ ] CI executed on GitHub (requires a remote, after approval)
+- [x] CI executed on GitHub (run #1, commit `ac80017`, 2026-11-27: all jobs passed)
 - [x] README, architecture overview, ADRs, report, learning guide, interview prep
 - [x] Reviewed, audited and approved for commit

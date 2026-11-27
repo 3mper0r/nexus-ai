@@ -54,8 +54,10 @@ jobs:
         with:
           python-version-file: .python-version
 
+      # setup-uv publishes no floating major tags since v8, so pin the immutable
+      # release commit (v6 ran on the deprecated Node 20 runtime).
       - name: Set up uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.13.9"
           enable-cache: true

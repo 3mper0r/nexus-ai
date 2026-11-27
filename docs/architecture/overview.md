@@ -149,7 +149,8 @@ src/
 
 Two parallel jobs on `ubuntu-24.04`:
 
-* **backend**: Python from `.python-version`, uv 0.13.9, `uv sync --locked`, ruff
+* **backend**: Python from `.python-version`, uv 0.13.9 (via `astral-sh/setup-uv` pinned to the
+  v10.4.0 commit SHA), `uv sync --locked`, ruff
   check, ruff format --check, mypy, unit tests, `alembic upgrade head`, integration tests
   against a `pgvector/pgvector:0.8.7-pg17-bookworm` service.
 * **frontend**: Node from `.nvmrc`, `npm ci`, ESLint, `next typegen && tsc`, `next build`
