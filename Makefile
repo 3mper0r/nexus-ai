@@ -87,7 +87,7 @@ web: ## Run the web app (dev server) on http://localhost:3000
 	cd $(WEB_DIR) && npm run dev
 
 ##@ Quality
-.PHONY: format lint typecheck test test-unit test-integration test-model check api-check web-check
+.PHONY: format lint typecheck test test-unit test-integration test-model test-llm check api-check web-check
 format: ## Auto-format backend code (ruff)
 	cd $(API_DIR) && uv run ruff format . && uv run ruff check --fix .
 
@@ -99,20 +99,23 @@ typecheck: ## Type-check backend (mypy) and frontend (tsc)
 	cd $(API_DIR) && uv run mypy
 	cd $(WEB_DIR) && npm run typecheck
 
-test-unit: ## Backend unit tests (no database, no model)
-	cd $(API_DIR) && uv run pytest -m "not integration and not model"
+test-unit: ## Backend unit tests (no database, no model, no API key)
+	cd $(API_DIR) && uv run pytest -m "not integration and not model and not llm"
 
 test-integration: check-env ## Backend integration tests (requires `make db-up`; fails if DB is down)
-	$(UV_RUN) pytest -m "integration and not model"
+	$(UV_RUN) pytest -m "integration and not model and not llm"
 
 test-model: check-env ## Real embedding model tests (requires `make models` and `make db-up`)
 	$(UV_RUN) pytest -m model
 
-test: check-env ## Backend unit + integration tests (requires `make db-up`; excludes model tests)
-	$(UV_RUN) pytest -m "not model"
+test-llm: check-env ## Live Anthropic API tests (needs ANTHROPIC_API_KEY in .env; costs a few cents)
+	$(UV_RUN) pytest -m llm
+
+test: check-env ## Backend unit + integration tests (requires `make db-up`; no model, no API)
+	$(UV_RUN) pytest -m "not model and not llm"
 
 api-check: ## Backend: lint, format check, mypy, unit tests
-	cd $(API_DIR) && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -m "not integration and not model"
+	cd $(API_DIR) && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -m "not integration and not model and not llm"
 
 web-check: ## Frontend: lint, typecheck, production build
 	cd $(WEB_DIR) && npm run check

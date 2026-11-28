@@ -20,6 +20,7 @@ from sqlalchemy.engine import URL
 AppEnv = Literal["local", "test", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 LogFormat = Literal["console", "json"]
+LlmEffort = Literal["low", "medium", "high", "xhigh", "max"]
 
 # The embedding model accepts at most 512 tokens. A chunk is embedded as
 # "passage: " + text plus <s> and </s>, so chunks must leave room for those.
@@ -90,6 +91,22 @@ class Settings(BaseSettings):
     search_top_k_max: int = Field(default=20, ge=1, le=100)
     search_ef_search: int = Field(default=64, ge=1, le=1000)
 
+    # --- Grounded answers (Claude) ----------------------------------------------
+    # Optional: without a key, search keeps working and /chat explains the setup.
+    anthropic_api_key: SecretStr | None = None
+    llm_model: str = "claude-sonnet-5-5"
+    llm_effort: LlmEffort = "low"
+    llm_max_output_tokens: int = Field(default=2048, ge=256, le=64_000)
+    llm_daily_budget_usd: float = Field(default=1.0, ge=0, le=1000)
+    llm_max_concurrent_generations: int = Field(default=4, ge=1, le=32)
+    llm_timeout_seconds: float = Field(default=120.0, gt=0, le=600)
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
+
+    # --- Retrieval-augmented generation -------------------------------------------
+    rag_top_k: int = Field(default=8, ge=1, le=20)
+    rag_context_char_budget: int = Field(default=24_000, ge=1_000, le=200_000)
+    rag_history_turns: int = Field(default=4, ge=0, le=20)
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: object) -> object:
@@ -133,7 +150,27 @@ class Settings(BaseSettings):
             raise ValueError("CHUNK_OVERLAP_TOKENS must be less than half of CHUNK_TOKENS")
         if self.search_top_k_max > self.search_ef_search:
             raise ValueError("SEARCH_EF_SEARCH must be >= SEARCH_TOP_K_MAX")
+        if self.rag_top_k > self.search_top_k_max:
+            raise ValueError("RAG_TOP_K must be <= SEARCH_TOP_K_MAX")
         return self
+
+    @model_validator(mode="after")
+    def _validate_llm_model(self) -> Settings:
+        # Imported here: pricing is a leaf module, config must not import app code at load.
+        from nexus_api.llm.pricing import PRICES
+
+        if self.llm_model not in PRICES:
+            known = ", ".join(sorted(PRICES))
+            raise ValueError(
+                f"LLM_MODEL {self.llm_model!r} has no price entry (known: {known}); "
+                "budget enforcement needs one"
+            )
+        return self
+
+    @property
+    def llm_configured(self) -> bool:
+        key = self.anthropic_api_key
+        return key is not None and bool(key.get_secret_value().strip())
 
     @property
     def database_url(self) -> URL:

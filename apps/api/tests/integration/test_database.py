@@ -68,7 +68,7 @@ async def test_migrations_are_at_head(engine: AsyncEngine, migrated_settings: Se
         result = await connection.execute(text("SELECT version_num FROM alembic_version"))
         current = result.scalar()
 
-    assert head == "0002"
+    assert head == "0004"
     assert current == head
 
 
@@ -155,7 +155,9 @@ async def test_shutdown_disposes_engine_connections(
     async with client_for(app) as client:
         await wait_until_accepting(app)  # startup recovery uses the pool too
         assert (await client.get("/api/v1/health/ready")).status_code == 200
-        assert await _scalar(migrated_settings, open_app_connections, db_name) == 1  # pooled, idle
+        # Pooled and idle: one per startup recovery (ingestion and chat run
+        # concurrently) at most; the property under test is that shutdown closes all.
+        assert await _scalar(migrated_settings, open_app_connections, db_name) in {1, 2}
 
     # Backend processes exit asynchronously after the client disconnects.
     for _ in range(40):

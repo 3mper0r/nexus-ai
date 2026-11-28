@@ -9,16 +9,26 @@ against the real model separately (``-m model``).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import re
 import threading
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
+from dataclasses import dataclass, field
 
 import numpy as np
 from pypdf import PdfReader, PdfWriter
 
 from nexus_api.embeddings.base import EMBEDDING_DIMENSION, FloatMatrix, TokenSpan
+from nexus_api.llm.generator import (
+    CitationRef,
+    Completed,
+    GenerationEvent,
+    GenerationRequest,
+    TextDelta,
+)
+from nexus_api.llm.pricing import TokenUsage
 
 _TOKEN = re.compile(r"\w+|[^\w\s]")
 
@@ -146,3 +156,57 @@ def paragraph(words: int, seed: str = "lorem") -> str:
     vocabulary = [f"{seed}{i % 37}" for i in range(words)]
     sentences = [" ".join(vocabulary[i : i + 12]) + "." for i in range(0, words, 12)]
     return " ".join(sentences)
+
+
+# --- Answer generators (M2) -------------------------------------------------------------
+
+
+@dataclass
+class ScriptedGenerator:
+    """An ``AnswerGenerator`` that replays scripted events.
+
+    ``script(request)`` returns the events for one request. ``hold`` (optional) is
+    awaited after the first event, to keep a stream open for cancellation tests.
+    Records every request and whether its stream was closed early.
+    """
+
+    script: Callable[[GenerationRequest], list[GenerationEvent | Exception]]
+    hold: asyncio.Event | None = None
+    requests: list[GenerationRequest] = field(default_factory=list)
+    closed_early: int = 0
+    started: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def stream(self, request: GenerationRequest) -> AsyncIterator[GenerationEvent]:
+        self.requests.append(request)
+        finished = False
+        try:
+            for position, item in enumerate(self.script(request)):
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+                if position == 0:
+                    self.started.set()
+                    if self.hold is not None:
+                        await self.hold.wait()
+            finished = True
+        finally:
+            if not finished:
+                self.closed_early += 1
+
+
+def cited_answer(request: GenerationRequest) -> list[GenerationEvent | Exception]:
+    """Text in two blocks; the second cites passage 0 of search result 0."""
+    events: list[GenerationEvent | Exception] = [TextDelta(text="Here is the answer. ", block=0)]
+    if request.sources:
+        events.append(
+            CitationRef(block=1, search_result_index=0, start_block_index=0, end_block_index=1)
+        )
+    events += [
+        TextDelta(text="It is stated in the document.", block=1),
+        Completed(
+            stop_reason="end_turn",
+            usage=TokenUsage(input_uncached=1000, cache_creation=0, cache_read=700, output=120),
+            model="claude-sonnet-5-5",
+        ),
+    ]
+    return events

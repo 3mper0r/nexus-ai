@@ -21,6 +21,9 @@ from nexus_api.db.engine import create_engine, create_sessionmaker
 from nexus_api.documents.ingestion import IngestionRunner
 from nexus_api.embeddings.base import Embedder
 from nexus_api.embeddings.provider import EmbedderProvider
+from nexus_api.llm.claude import ClaudeAnswerGenerator
+from nexus_api.llm.generator import AnswerGenerator
+from nexus_api.rag.service import ChatService
 
 # Multipart framing (boundaries, part headers) on top of the file itself.
 MULTIPART_OVERHEAD_BYTES = 64 * 1024
@@ -28,13 +31,20 @@ MULTIPART_OVERHEAD_BYTES = 64 * 1024
 logger = structlog.stdlib.get_logger(__name__)
 
 
-def create_app(settings: Settings | None = None, *, embedder: Embedder | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    embedder: Embedder | None = None,
+    answer_generator: AnswerGenerator | None = None,
+) -> FastAPI:
     """Build a fully configured application.
 
     A factory (instead of a module-level ``app``) means importing this module has
     no side effects, and tests can build isolated apps with explicit settings.
     ``embedder`` injects a ready embedder (tests); by default the pinned
     sentence-transformers model is loaded from the local cache in the background.
+    ``answer_generator`` injects a generator (tests); by default Claude is used when
+    ``ANTHROPIC_API_KEY`` is set, and grounded answers are disabled otherwise.
     """
     if settings is None:
         settings = Settings()  # required values come from env
@@ -54,13 +64,22 @@ def create_app(settings: Settings | None = None, *, embedder: Embedder | None = 
             provider.start_loading()
         runner = IngestionRunner(sessionmaker, provider, settings)
         runner.start()
+        generator = answer_generator
+        owned_generator: ClaudeAnswerGenerator | None = None
+        if generator is None and settings.llm_configured:
+            generator = owned_generator = ClaudeAnswerGenerator(settings)
+        chat = ChatService(sessionmaker, provider, settings, generator)
+        chat.start()
         app.state.embedder_provider = provider
         app.state.ingestion_runner = runner
+        app.state.chat_service = chat
         logger.info(
             "application_startup",
             app_env=settings.app_env,
             version=__version__,
             database=settings.database_url.render_as_string(hide_password=True),
+            llm_configured=settings.llm_configured,
+            llm_model=settings.llm_model,
         )
         try:
             yield
@@ -68,6 +87,9 @@ def create_app(settings: Settings | None = None, *, embedder: Embedder | None = 
             # Order matters: stop ingestion (which still writes status updates)
             # before the engine that those writes need is disposed.
             await runner.shutdown()
+            await chat.shutdown()
+            if owned_generator is not None:
+                await owned_generator.aclose()
             await provider.shutdown()
             await engine.dispose()
             logger.info("application_shutdown")

@@ -2,11 +2,15 @@
 
 An AI engineering platform built as a production-quality portfolio project.
 
-> **Status: Milestone 1 (Document ingestion & semantic retrieval).** PDFs are uploaded,
-> extracted page by page, chunked, embedded with a local multilingual model and stored in
-> PostgreSQL + pgvector. Semantic search returns passages with document and page
-> citations, in English, German and ~100 other languages. **No LLM calls yet**: grounded
-> answers with Claude arrive in M2.
+> **Status: Milestone 2 (Grounded answers).** PDFs are ingested and embedded locally
+> (M1). In `/chat`, questions in English, German and other languages are answered by
+> Claude **only from retrieved passages**, streamed live, with every claim linked to its
+> document and page. Token usage and cost are tracked against a daily budget.
+> No agents, tools or authentication yet.
+
+> **Privacy:** for grounded answers, the question, the retrieved passages and recent turns
+> of the conversation are sent to Anthropic's API. Embeddings and search stay local. Use
+> non-sensitive documents.
 
 ## What exists today
 
@@ -16,7 +20,8 @@ An AI engineering platform built as a production-quality portfolio project.
 | Ingestion | PDF validation (size, magic bytes, encryption, page count), per-page extraction with **pypdf**, page-bounded token-aware chunking, background ingestion with a bounded queue, status polling, SHA-256 deduplication, interruption recovery |
 | Embeddings | `intfloat/multilingual-e5-small` (384-d, MIT) via sentence-transformers on CPU-only PyTorch, pinned revision, offline loading |
 | Database | PostgreSQL 17 + pgvector 0.8.7 (Docker, `127.0.0.1:5434`), async SQLAlchemy 2.0, Alembic `0001` (pgvector) + `0002` (documents, chunks, HNSW cosine index) |
-| Frontend | Next.js 16 App Router, strict TypeScript, Tailwind v4, `/documents` (upload, live status, delete), `/search` (cited results, scope filter), `/status` |
+| Grounded answers | `/api/v1/conversations` + SSE answers: retrieval → `search_result` blocks → Claude (`claude-sonnet-5-5` via LangChain `ChatAnthropic`) → validated page citations; persistent conversations; reservation-based daily budget, concurrency limit, prompt caching, cancellation and crash recovery |
+| Frontend | Next.js 16 App Router, strict TypeScript, Tailwind v4, `/documents`, `/search`, `/chat` (streaming Markdown answers, citation chips and sources, Stop, budget panel), `/status` |
 | Quality | Ruff, mypy (strict), pytest (unit · real-DB integration · real-model), ESLint, `tsc`, GitHub Actions (routine CI + separate model workflow) |
 
 ## Repository layout
@@ -25,9 +30,9 @@ An AI engineering platform built as a production-quality portfolio project.
 nexus-ai/
 ├── apps/
 │   ├── api/                 # Python backend (uv project, src layout)
-│   │   ├── src/nexus_api/   # core/, db/, embeddings/, documents/, api/v1/
-│   │   ├── migrations/      # Alembic (async env): 0001 pgvector, 0002 documents + chunks
-│   │   └── tests/           # unit/ · integration/ (PostgreSQL) · model/ (real model)
+│   │   ├── src/nexus_api/   # core/, db/, embeddings/, documents/, llm/, rag/, api/v1/
+│   │   ├── migrations/      # Alembic: 0001 pgvector, 0002 documents + chunks, 0003 conversations, 0004 usage ledger
+│   │   └── tests/           # unit/ · integration/ (PostgreSQL) · model/ · llm/ (live API) · e2e/
 │   └── web/                 # Next.js frontend (src/app, src/components, src/lib)
 ├── docs/                    # architecture/, decisions/ (ADRs), milestones/, learning/
 ├── .github/workflows/       # ci.yml (routine), model.yml (real embedding model)
@@ -59,6 +64,7 @@ make setup            # create .env from .env.example, uv sync --locked, npm ci
 make db-up            # start PostgreSQL + pgvector on 127.0.0.1:5434 (waits for healthy)
 make migrate          # alembic upgrade head (pgvector, documents, chunks, HNSW index)
 make models           # one-time: download the pinned embedding model (~490 MB)
+# optional, for /chat: put ANTHROPIC_API_KEY=... into .env (never commit it)
 make api              # http://127.0.0.1:8000  (docs: /docs)
 make web              # http://localhost:3000  (in another terminal)
 ```
@@ -83,6 +89,16 @@ background a few seconds after the API starts (readiness says `loading` until th
    * Use **Scope** to search a single document. Each result shows its page citation and
      cosine similarity.
 5. Delete a document from the library: its passages disappear from search.
+6. With `ANTHROPIC_API_KEY` set, open <http://localhost:3000/chat>, start a conversation
+   and ask, e.g. for the GeoTopo example, `Was ist ein topologischer Raum?` or
+   `What is a metric space?`. The answer streams in; citation chips link to the sources
+   list (document, page, passage). Ask a follow-up, press **Stop** during an answer, and
+   watch the budget panel. Ask something the documents don't cover: the answer says so.
+
+Without an API key you can still see the full chat flow with a scripted generator (real
+retrieval, citations, streaming and persistence; no Claude):
+`cd apps/api && uv run --env-file ../../.env uvicorn tests.e2e.demo_app:create_demo_app --factory`
+(instead of `make api`).
 
 The same flow via the API:
 
@@ -119,6 +135,12 @@ process environment variables; the Makefile injects `.env` with `uv run --env-fi
 | `CHUNK_TOKENS` / `CHUNK_OVERLAP_TOKENS` | `400` / `60` | In model tokens; `CHUNK_TOKENS ≤ 496` |
 | `INGEST_MAX_CONCURRENCY` / `INGEST_QUEUE_CAPACITY` | `1` / `8` | Parallel ingestions; accepted-but-unfinished limit |
 | `SEARCH_TOP_K_MAX` / `SEARCH_EF_SEARCH` | `20` / `64` | Result cap; HNSW candidate list size |
+| `ANTHROPIC_API_KEY` | unset | **Secret.** Enables grounded answers; server-only, never sent to the browser |
+| `LLM_MODEL` / `LLM_EFFORT` | `claude-sonnet-5-5` / `low` | Answer model (must have a price entry) and effort |
+| `LLM_MAX_OUTPUT_TOKENS` | `2048` | Output limit per answer (includes thinking) |
+| `LLM_DAILY_BUDGET_USD` | `1.00` | Daily spending limit (UTC); worst-case cost reserved per question |
+| `LLM_MAX_CONCURRENT_GENERATIONS` / `LLM_TIMEOUT_SECONDS` | `4` / `120` | Concurrency limit (429 beyond); per-answer timeout |
+| `RAG_TOP_K` / `RAG_CONTEXT_CHAR_BUDGET` / `RAG_HISTORY_TURNS` | `8` / `24000` / `4` | Passages retrieved; context size; history turns sent |
 
 Frontend (optional `apps/web/.env.local`, see [`apps/web/.env.example`](apps/web/.env.example)):
 
@@ -143,16 +165,17 @@ Run `make help` for the full list.
 | `make test-unit` | Backend unit tests: **no database, no model** |
 | `make test-integration` | Integration tests against real PostgreSQL (fails, never skips, if the DB is down) |
 | `make test-model` | Real embedding model tests incl. end-to-end ingestion (needs `make models` + `make db-up`) |
-| `make test` | Unit + integration (no model) |
+| `make test-llm` | Live Anthropic API tests (needs `ANTHROPIC_API_KEY`; a few cents) |
+| `make test` | Unit + integration (no model, no API) |
 | `make check` | Everything routine CI runs (requires `make db-up`) |
 
 ## Testing strategy
 
-* **Unit** (`tests/unit`, 117 tests): hermetic. Real ASGI app in-process, database on a closed
+* **Unit** (`tests/unit`, 160 tests): hermetic. Real ASGI app in-process, database on a closed
   port, a deterministic feature-hashing embedder instead of the neural model, PDFs generated
   in-test (no binary fixtures). Covers chunking invariants, PDF validation/normalisation,
   filename sanitising, size limits (declared and streamed), error contracts, configuration.
-* **Integration** (`-m integration`, 38 tests): real PostgreSQL in a throwaway
+* **Integration** (`-m integration`, 59 tests): real PostgreSQL in a throwaway
   `<db>_test` database. Covers ingestion end to end, deduplication incl. concurrent
   duplicates, failure paths, graceful and crash interruption, the bounded queue, "no
   connection held while embedding", cascade delete, keyset pagination, HNSW usage, filtered
@@ -162,13 +185,38 @@ Run `make help` for the full list.
 * **Model** (`-m model`, 12 tests): the real pinned model. Dimension/normalisation,
   prefixes, a bilingual EN/DE golden set (MRR 1.0), cross-lingual retrieval, real-tokenizer
   chunk limits, and end-to-end upload → search with exact page citations.
-* Routine CI never downloads the model; `.github/workflows/model.yml` verifies it separately.
+* **Chat** tests use a scripted answer generator (unit, integration over a real uvicorn
+  server and PostgreSQL) and **contract tests** that run the real LangChain/Anthropic adapter
+  against Claude's SSE wire format offline: citations, usage incl. cache, stop reasons,
+  error mapping, cancellation.
+* **Live** (`-m llm`, 6 tests, opt-in): real model id, cited German answer, cache read on
+  the second request, "not found", prompt-injection resistance, cancellation. Each request
+  is recorded (tokens, cost, TTFT) and a cap (`LLM_TEST_BUDGET_USD`, default $0.50) stops
+  the run before overspending; `LLM_TEST_REPORT=<file>` writes the ledger. Last run: 6/6,
+  about $0.03 counting the cancelled request at its worst case.
+* Routine tests never see the API key, even when `.env` holds one: `tests/conftest.py`
+  removes `ANTHROPIC_API_KEY` from the environment, and only `-m llm` gets it back.
+* Routine CI never downloads the model and never calls the Anthropic API;
+  `.github/workflows/model.yml` verifies the embedding model separately.
 
 ## Documentation
 
 * [Architecture overview](docs/architecture/overview.md) · [ADRs](docs/decisions/)
 * [M1 implementation report](docs/milestones/m1-report.md) · [M1 plan](docs/milestones/m1-plan.md) · [M0 report](docs/milestones/m0-report.md)
-* Learning: [M1 guide](docs/learning/m1-learning-guide.md) · [M1 interview prep](docs/learning/m1-interview-prep.md) · [M0 guide](docs/learning/m0-learning-guide.md) · [M0 interview prep](docs/learning/m0-interview-prep.md)
+* [M2 implementation report](docs/milestones/m2-report.md) · [M2 plan](docs/milestones/m2-plan.md)
+* Learning: [M2 guide](docs/learning/m2-learning-guide.md) · [M2 interview prep](docs/learning/m2-interview-prep.md) · [M1 guide](docs/learning/m1-learning-guide.md) · [M1 interview prep](docs/learning/m1-interview-prep.md) · [M0 guide](docs/learning/m0-learning-guide.md) · [M0 interview prep](docs/learning/m0-interview-prep.md)
+
+## Known limitations (M2)
+
+* Grounded answers send passages and questions to Anthropic (disclosed in the UI). Costs
+  are computed from public prices (measured: $0.0014–0.0075 per answer, TTFT ≈ 0.7–1.0 s).
+  The daily budget is enforced conservatively: each question reserves about $0.03, and a
+  cancelled or failed answer keeps that reservation because its usage is never reported.
+  Spend is kept in a ledger (`llm_usage`), so deleting conversations does not reset it.
+* No query rewriting: very terse follow-ups rely on the previous question being added to
+  the retrieval query.
+* A citation marker that the model places inside a raw HTML line renders as text (the
+  source is still listed).
 
 ## Known limitations (M1)
 

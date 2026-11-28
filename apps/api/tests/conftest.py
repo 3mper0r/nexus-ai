@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
@@ -17,6 +18,19 @@ from nexus_api.core.config import Settings
 from nexus_api.embeddings.base import Embedder
 
 SettingsFactory = Callable[..., Settings]
+
+# Routine tests must never reach the paid API, even when .env holds a real key
+# (`make test` loads .env). The key is taken out of the environment before any test
+# or fixture builds Settings; only the opt-in live tests (marker ``llm``) get it back,
+# through the ``live_anthropic_api_key`` fixture.
+_LIVE_ANTHROPIC_API_KEY = os.environ.pop("ANTHROPIC_API_KEY", None)
+
+
+@pytest.fixture(scope="session")
+def live_anthropic_api_key() -> str | None:
+    return _LIVE_ANTHROPIC_API_KEY or None
+
+
 ClientFactory = Callable[[FastAPI], AbstractAsyncContextManager[httpx.AsyncClient]]
 
 
@@ -59,8 +73,10 @@ async def wait_until(predicate: Callable[[], bool], *, limit_seconds: float = 10
 
 
 async def wait_until_accepting(app: FastAPI) -> None:
-    """Wait for startup recovery to finish (requires a reachable database)."""
-    await wait_until(lambda: bool(app.state.ingestion_runner.accepting))
+    """Wait for both startup recoveries (ingestion, chat) to finish (needs the database)."""
+    await wait_until(
+        lambda: bool(app.state.ingestion_runner.accepting and app.state.chat_service.ready)
+    )
 
 
 @asynccontextmanager

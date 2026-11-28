@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { type ComponentType, type ReactNode, Suspense } from "react";
 
 import { NavLink } from "@/components/nav-link";
 
@@ -22,10 +22,11 @@ export function AppShell({ children }: { children: ReactNode }) {
             </span>
           </Link>
           <nav aria-label="Primary" className="flex min-w-0 items-center gap-0.5 text-sm sm:gap-1">
-            <NavLink href="/">Overview</NavLink>
-            <NavLink href="/documents">Documents</NavLink>
-            <NavLink href="/search">Search</NavLink>
-            <NavLink href="/status">Status</NavLink>
+            {/* NavLink reads the pathname, which is request-time data on dynamic routes
+                (/chat/[id]); the fallback renders the same links without highlighting. */}
+            <Suspense fallback={<NavItems Item={PlainLink} />}>
+              <NavItems Item={NavLink} />
+            </Suspense>
           </nav>
         </div>
       </header>
@@ -35,10 +36,43 @@ export function AppShell({ children }: { children: ReactNode }) {
       <footer className="border-t border-border">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 font-mono text-xs text-muted sm:px-6">
           <span>NEXUS AI</span>
-          <span>M1 · ingestion &amp; retrieval</span>
+          <span>M2 · grounded answers</span>
         </div>
       </footer>
     </div>
+  );
+}
+
+const NAV_ITEMS = [
+  ["/", "Overview"],
+  ["/documents", "Documents"],
+  ["/search", "Search"],
+  ["/chat", "Chat"],
+  ["/status", "Status"],
+] as const;
+
+type ItemProps = { href: string; children: ReactNode };
+
+function NavItems({ Item }: { Item: ComponentType<ItemProps> }) {
+  return (
+    <>
+      {NAV_ITEMS.map(([href, label]) => (
+        <Item key={href} href={href}>
+          {label}
+        </Item>
+      ))}
+    </>
+  );
+}
+
+function PlainLink({ href, children }: ItemProps) {
+  return (
+    <Link
+      href={href}
+      className="whitespace-nowrap rounded-md px-2 py-1.5 text-muted transition-colors hover:bg-surface-raised hover:text-foreground sm:px-3"
+    >
+      {children}
+    </Link>
   );
 }
 

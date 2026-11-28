@@ -20,3 +20,9 @@ Status values: Proposed · Accepted · Superseded.
 | [0013](0013-page-bounded-token-aware-chunking.md) | Page-bounded, token-aware chunking | Accepted |
 | [0014](0014-vector-search-hnsw-cosine.md) | Vector search with HNSW, cosine distance and iterative scans | Accepted |
 | [0015](0015-upload-limits-and-validation.md) | Upload path, size limits and validation | Accepted |
+| [0016](0016-rag-pipeline-and-answer-generator.md) | RAG pipeline and the `AnswerGenerator` boundary (LangChain `ChatAnthropic`) | Accepted |
+| [0017](0017-grounding-and-search-result-citations.md) | Grounding and native `search_result` citations | Accepted |
+| [0018](0018-prompt-layout-and-caching.md) | Prompt layout for prompt caching | Accepted |
+| [0019](0019-streaming-cancellation-and-transactions.md) | SSE streaming, cancellation and transaction boundaries | Accepted |
+| [0020](0020-token-and-cost-controls.md) | Token and cost controls with race-free budget enforcement | Accepted |
+| [0021](0021-chat-ui-markdown-and-error-model.md) | Chat UI, safe Markdown and the error model | Accepted |

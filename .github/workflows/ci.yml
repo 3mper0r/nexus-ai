@@ -75,16 +75,17 @@ jobs:
       - name: mypy
         run: uv run mypy
 
-      # Routine CI never downloads the embedding model: unit and integration tests
-      # use a deterministic fake. The real model is verified in model.yml.
+      # Routine CI never downloads the embedding model and never calls the Anthropic
+      # API: tests use deterministic fakes. The real model is verified in model.yml;
+      # live API tests (-m llm) are opt-in and run only locally.
       - name: Unit tests
-        run: uv run pytest -m "not integration and not model"
+        run: uv run pytest -m "not integration and not model and not llm"
 
       - name: Apply migrations
         run: uv run alembic upgrade head
 
       - name: Integration tests (real PostgreSQL; fails if unavailable)
-        run: uv run pytest -m "integration and not model"
+        run: uv run pytest -m "integration and not model and not llm"
 
   frontend:
     name: Frontend (lint · types · build)

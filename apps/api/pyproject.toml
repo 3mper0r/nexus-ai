@@ -20,6 +20,10 @@ dependencies = [
     "torch>=2.15,<2.16",               # CPU-only wheels, see [tool.uv.sources]
     "pgvector>=0.5,<0.6",              # SQLAlchemy Vector type
     "numpy>=2,<3",                     # embedding arrays (imported directly)
+    # --- M2: grounded answers with Claude ---
+    "langchain-anthropic>=1.7.13,<2",  # Claude chat model client (ADR 0016)
+    "anthropic>=2.14,<3",              # typed API errors, wire-format types
+    "sse-starlette>=3.7,<4",           # Server-Sent Events responses
 ]
 
 [dependency-groups]
@@ -108,5 +112,6 @@ addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importli
 markers = [
     "integration: requires running infrastructure (PostgreSQL). Deselect with -m 'not integration'.",
     "model: requires the real embedding model in the local cache (`make models`). Deselect with -m 'not model'.",
+    "llm: calls the real Anthropic API (needs ANTHROPIC_API_KEY, costs money). Opt-in only: -m llm.",
 ]
 filterwarnings = ["error"]

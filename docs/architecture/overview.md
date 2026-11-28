@@ -1,4 +1,4 @@
-# Architecture overview (as of M1)
+# Architecture overview (as of M2)
 
 This document describes what is **implemented**. Planned components are listed
 separately and explicitly marked as such.
@@ -11,7 +11,7 @@ separately and explicitly marked as such.
    ▼
 ┌───────────────────────────┐        server-side fetch          ┌──────────────────────────────┐
 │  apps/web (Next.js 16)    │ ─────────────────────────────────▶ │  apps/api (FastAPI, ASGI)    │
-│  Node 24 · :3000          │  /api/v1/health/* · /documents     │  uvicorn · 127.0.0.1:8000    │
+│  Node 24 · :3000          │  /documents · /search · SSE answers│  uvicorn · 127.0.0.1:8000    │
 │  - App Router, RSC        │  /search · X-Request-ID: web-<uuid>│  - IngestionRunner (asyncio) │
 │  - Server Actions (upload)│  timeout: per call                 │  - worker threads: pypdf,    │
 │  - server-only API client │                                    │    multilingual-e5-small     │
@@ -25,8 +25,11 @@ separately and explicitly marked as such.
                                                                  └──────────────────────────────┘
 ```
 
-The browser never calls the API directly: pages are Server Components and uploads go
-through a Server Action, so API access happens Next.js-server → API. CORS is nevertheless
+The browser never calls the API directly: pages are Server Components, uploads go through
+a Server Action and streamed answers through a Route Handler proxy, so API access happens
+Next.js-server → API. The API in turn calls the Anthropic Messages API (via LangChain's
+`ChatAnthropic`) for grounded answers; that is the only external service, and only when
+`ANTHROPIC_API_KEY` is set. CORS is nevertheless
 configured explicitly for the browser-direct calls (e.g. SSE streaming) planned
 in later milestones.
 
@@ -51,6 +54,17 @@ src/nexus_api/
 │   ├── e5.py            multilingual-e5-small via sentence-transformers (CPU, offline)
 │   ├── provider.py      background model loading, readiness state
 │   └── download.py      `make models`: fetch the pinned revision
+├── llm/                 (no HTTP, no DB)
+│   ├── generator.py     AnswerGenerator Protocol, typed events, GenerationError
+│   ├── claude.py        ChatAnthropic implementation: request layout, events, error mapping
+│   └── pricing.py       dated price table, cost and worst-case reservation
+├── rag/                 (no HTTP)
+│   ├── context.py       budgeted, per-document context assembly
+│   ├── citations.py     citation validation and numbering, markers
+│   ├── prompt.py        constant system prompt, history window
+│   ├── repository.py    conversations/messages SQL, advisory-locked budget admission
+│   ├── service.py       ChatService: admission, streaming, outcomes, recovery, status
+│   └── errors.py        404/409/429/503 domain errors
 ├── documents/           (no HTTP)
 │   ├── pdf.py           validation + per-page extraction (pypdf), normalisation
 │   ├── chunking.py      page-bounded, token-aware chunking (pure functions)
@@ -64,7 +78,8 @@ src/nexus_api/
         ├── router.py    /api/v1 prefix
         ├── health.py    /health/live, /health/ready (database + embedding model)
         ├── documents.py POST/GET/GET{id}/DELETE /documents
-        └── search.py    POST /search
+        ├── search.py    POST /search
+        └── conversations.py  /conversations CRUD, POST …/messages (SSE), GET /llm/status
 ```
 
 ### Layering
@@ -157,6 +172,33 @@ POST /search {query, top_k, document_ids?}
 
 Details and trade-offs: ADRs [0009](../decisions/0009-document-and-chunk-data-model.md)–[0015](../decisions/0015-upload-limits-and-validation.md).
 
+## Grounded answers (M2)
+
+```text
+POST /api/v1/conversations/{id}/messages {content, document_ids?}
+ prepare (JSON errors, nothing stored on rejection)
+   key configured? (503) · chat recovered? (503) · generation slot free? (429 llm_busy)
+   short txn: conversation exists (404) + last 4 completed Q&A pairs
+   to_thread: embed "query: <previous question>\n<question>" → HNSW top-8 (short txn)
+   assemble context (24k chars, per document, by position)
+   no passages → store no_context turn, fixed answer, no API call
+   ONE txn under pg_advisory_xact_lock: no streaming turn in this conversation (409);
+       today's ledger COALESCE(cost, reservation) + worst case ≤ budget (429); insert user row +
+       assistant row {status: streaming} + llm_usage row {reserved_cost_usd}
+       (the ledger has no FK: deleting conversations never removes spend)
+ stream (text/event-stream; NO database connection held)
+   meta → ChatAnthropic.astream(system[cache] + history[cache on last] +
+          [search_result per document (one text block per chunk), question])
+        → delta… / citation (validated against what was sent) / markers [n](#cite-n)
+   done {status, grounded, usage incl. cache, cost} | error {code, retryable}
+   ONE short txn: content, citations snapshot, usage, cost, status
+   disconnect/aclose → upstream closed, status cancelled (partial kept, shielded write)
+   never started (client gone before the first byte) → response guard: cancelled, cost 0
+ startup: streaming rows → interrupted (reservation keeps counting)
+```
+
+Details: ADRs [0016](../decisions/0016-rag-pipeline-and-answer-generator.md)–[0021](../decisions/0021-chat-ui-markdown-and-error-model.md).
+
 ## Frontend (`apps/web`)
 
 ```text
@@ -167,10 +209,13 @@ src/
 │   ├── page.tsx           overview (static)
 │   ├── status/page.tsx    static shell + <Suspense> dynamic HealthPanel (PPR)
 │   ├── documents/         page.tsx (upload + library, PPR), actions.ts (Server Actions)
-│   └── search/page.tsx    GET form (next/form) + results streamed behind <Suspense>
+│   ├── search/page.tsx    GET form (next/form) + results streamed behind <Suspense>
+│   ├── chat/              layout (conversation list, budget, disclosure), page, [id]/page, actions
+│   └── api/conversations/[id]/messages/route.ts   SSE proxy (same-origin, JSON, abort-linked)
 ├── components/            app-shell, nav-link (client), status-badge
 │   ├── documents/         upload-form, document-library, auto-refresh, delete-button
-│   └── search/            result-card (page citation, similarity)
+│   ├── search/            result-card (page citation, similarity)
+│   └── chat/              chat-thread (streaming client), answer-markdown, conversation-nav/buttons
 └── lib/
     ├── env.server.ts      server-only env parsing (lazy, validated)
     ├── format.ts          bytes, timestamps, page labels, failure messages
@@ -179,7 +224,9 @@ src/
         ├── client.ts      server-only apiRequest(): JSON/multipart/204, timeout, ApiResult
         ├── health.ts      getLiveness(), getReadiness()
         ├── documents.ts   listDocuments(), uploadDocument(), deleteDocument()
-        └── search.ts      searchDocuments()
+        ├── search.ts      searchDocuments()
+        └── conversations.ts   conversations CRUD, getLlmStatus()
+    (lib/sse.ts: fetch-stream SSE reader; types.ts: chat contracts + stream event guards)
 ```
 
 * **Cache Components / PPR:** `/status` prerenders a static shell at build time; the
@@ -195,6 +242,12 @@ src/
   multipart. `refresh()` re-renders the library in the same round trip; `AutoRefresh` calls
   `router.refresh()` every 2 s while any document is pending/processing.
 * **Search** is a GET form, so result pages are shareable URLs (`/search?q=…&doc=…&k=…`).
+* **Chat** streams through the Route Handler proxy into a client component that parses SSE
+  with `fetch` + `ReadableStream`, batches deltas per animation frame and renders Markdown
+  with `react-markdown` (raw HTML as text, no images); Stop aborts the fetch, which aborts
+  the proxy's upstream request and makes the API cancel generation.
+* The primary nav reads the pathname inside `<Suspense>` (required for dynamic routes such
+  as `/chat/[id]` under Cache Components).
 
 ## Infrastructure
 
@@ -222,8 +275,10 @@ Two parallel jobs on `ubuntu-24.04`:
 and runs `pytest -m model` (real-model tests and end-to-end ingestion/search) on manual
 dispatch, weekly, and on pushes that touch `embeddings/`, `documents/` or `uv.lock`.
 
+Live Anthropic API tests (`-m llm`) are opt-in, local only; routine CI uses fakes and
+offline wire-format contract tests.
+
 ## Planned (not implemented)
 
-Grounded answers with Claude and SSE streaming (M2), LangGraph agents and MCP/FastMCP
-tools (M3), Langfuse tracing and RAGAS evaluation (M4), authentication, a durable job
-queue and containerised API/web (M5).
+LangGraph agents and MCP/FastMCP tools (M3), Langfuse tracing and RAGAS evaluation (M4),
+authentication, a durable job queue and containerised API/web (M5).

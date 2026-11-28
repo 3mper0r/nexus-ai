@@ -4,21 +4,26 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
+from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from nexus_api.db.base import Base
@@ -107,3 +112,95 @@ class Chunk(Base):
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
     )
+
+
+# --- M2: conversations ----------------------------------------------------------------
+
+
+class MessageRole(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class MessageStatus(StrEnum):
+    """Lifecycle of a message. User messages are always ``complete``."""
+
+    STREAMING = "streaming"  # generation in progress (holds a budget reservation)
+    COMPLETE = "complete"
+    NO_CONTEXT = "no_context"  # nothing retrieved: fixed answer, Claude not called
+    TRUNCATED = "truncated"  # stop_reason max_tokens
+    REFUSED = "refused"  # stop_reason refusal (no automatic fallback)
+    FAILED = "failed"  # upstream or internal error; partial text kept
+    CANCELLED = "cancelled"  # client disconnected; partial text kept
+    INTERRUPTED = "interrupted"  # process stopped mid-generation; found at startup
+
+
+_MESSAGE_STATUSES = ", ".join(f"'{s.value}'" for s in MessageStatus)
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (Index("ix_conversations_updated_at", updated_at.desc()),)
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE")
+    )
+    role: Mapped[str] = mapped_column(String(16))
+    content: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16))
+    # Snapshot of validated citations (filename, pages, passage text): history stays
+    # readable after a document is deleted or re-ingested.
+    citations: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    retrieved: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    grounded: Mapped[bool | None] = mapped_column(Boolean)
+    model: Mapped[str | None] = mapped_column(String(100))
+    input_tokens: Mapped[int | None] = mapped_column(Integer)  # uncached input only
+    cache_creation_tokens: Mapped[int | None] = mapped_column(Integer)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    reserved_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    stop_reason: Mapped[str | None] = mapped_column(String(32))
+    stop_category: Mapped[str | None] = mapped_column(String(64))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    ttft_ms: Mapped[int | None] = mapped_column(Integer)
+    total_ms: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("role IN ('user', 'assistant')", name="role_valid"),
+        CheckConstraint(f"status IN ({_MESSAGE_STATUSES})", name="status_valid"),
+        Index("ix_messages_conversation_id_created_at", "conversation_id", "created_at"),
+        Index("ix_messages_created_at", "created_at"),
+    )
+
+
+class LlmUsage(Base):
+    """One row per admitted generation: the budget ledger (ADR 0020).
+
+    ``id`` is the assistant message id, deliberately without a foreign key, so that
+    deleting a conversation never deletes spend. ``cost_usd`` is NULL until the actual
+    cost is known; budget sums use ``COALESCE(cost_usd, reserved_cost_usd)``.
+    """
+
+    __tablename__ = "llm_usage"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    model: Mapped[str] = mapped_column(String(100))
+    reserved_cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6))
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (Index("ix_llm_usage_created_at", "created_at"),)

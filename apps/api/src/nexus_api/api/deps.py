@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from nexus_api.core.config import Settings
 from nexus_api.documents.ingestion import IngestionRunner
 from nexus_api.embeddings.provider import EmbedderProvider
+from nexus_api.rag.service import ChatService
 
 
 def get_settings(request: Request) -> Settings:
@@ -49,8 +50,14 @@ def get_ingestion_runner(request: Request) -> IngestionRunner:
     return runner
 
 
+def get_chat_service(request: Request) -> ChatService:
+    chat: ChatService = request.app.state.chat_service
+    return chat
+
+
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 EngineDep = Annotated[AsyncEngine, Depends(get_engine)]
 DbSessionDep = Annotated[AsyncSession, Depends(get_db_session)]
 EmbedderProviderDep = Annotated[EmbedderProvider, Depends(get_embedder_provider)]
 IngestionRunnerDep = Annotated[IngestionRunner, Depends(get_ingestion_runner)]
+ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
